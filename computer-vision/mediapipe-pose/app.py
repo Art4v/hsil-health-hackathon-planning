@@ -89,6 +89,25 @@ def get_hand_state(hand_lm):
 
     return state, fingers_up, extended_count
 
+
+# -----------------------------------------------------------------------------
+# FUNCTIONS TO CALCULATE ANGLES
+# -----------------------------------------------------------------------------
+
+# Returns the angle in degrees at point b, formed by the vectors b->a and b->c
+def angle_between(a, b, c):
+    a, b, c = np.array(a), np.array(b), np.array(c)
+    ba = a - b
+    bc = c - b
+    cosine = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
+    return np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+
+# Returns the angle of a vector relative to horizontal (0° = flat, 90° = pointing up)
+# Negative y because image coords have y increasing downward
+def elevation_angle(p1, p2):
+    vec = np.array(p2) - np.array(p1)
+    return np.degrees(np.arctan2(-vec[1], abs(vec[0])))
+
 # -----------------------------------------------------------------------------
 # INITIALISATION OF MODELS AND WEBCAM
 # -----------------------------------------------------------------------------
@@ -120,6 +139,9 @@ while cap.isOpened():
     pose_results  = pose.process(rgb)
     hands_results = hands.process(rgb)
 
+    # Store pose wrist positions so the hand section can look them up: { "LEFT": (x, y), "RIGHT": (x, y) } in normalised coords
+    pose_wrist_positions = {}
+
     # -----------------------------------------------------------------------------
     # POSE RENDERING
     # -----------------------------------------------------------------------------
@@ -142,6 +164,32 @@ while cap.isOpened():
                 idx = POSE_LANDMARKS[f"{side}_{joint}"]
                 pts.append((int(lm[idx].x * w), int(lm[idx].y * h)))
             cv2.polylines(frame, [np.array(pts)], False, (0, 200, 100), 2)
+            
+            '''
+            FOR ANGLE CALCULATION OF ARM
+            '''
+            
+            # Unpack the 3 pixel coords for angle calculations
+            shoulder_px, elbow_px, wrist_px = pts
+
+            # Elbow flexion angle — angle at elbow between upper arm and forearm
+            # 180° = fully straight, smaller = more bent
+            elbow_angle = angle_between(shoulder_px, elbow_px, wrist_px)
+
+            # Forearm elevation — how far the forearm is tilted above horizontal
+            # Uses elbow->wrist vector vs the table plane (horizontal in image space)
+            forearm_elev = elevation_angle(elbow_px, wrist_px)
+
+            # Display both angles near the elbow joint
+            ex, ey = elbow_px
+            cv2.putText(frame, f"Flex: {elbow_angle:.1f}deg",
+                        (ex + 10, ey - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
+            cv2.putText(frame, f"Elev: {forearm_elev:.1f}deg",
+                        (ex + 10, ey + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
+
+            # Save wrist position in normalised coords for hand matching below
+            wrist_idx = POSE_LANDMARKS[f"{side}_WRIST"]
+            pose_wrist_positions[side] = (lm[wrist_idx].x, lm[wrist_idx].y)
 
     # -----------------------------------------------------------------------------
     # HAND RENDERING
@@ -186,6 +234,43 @@ while cap.isOpened():
             )
             cv2.putText(frame, breakdown, (wx, wy + 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+            # Compute wrist bend angle using elbow (from pose) -> wrist -> middle MCP. First, match this hand to the 
+            # correct pose arm by finding the closest pose wrist to the hand's wrist landmark (in normalised coords)
+            if pose_wrist_positions:
+                hand_wrist_norm = np.array([wrist.x, wrist.y])
+                closest_side = min(
+                    pose_wrist_positions,
+                    key=lambda s: np.linalg.norm(
+                        hand_wrist_norm - np.array(pose_wrist_positions[s])
+                    )
+                )
+
+                # Only compute if the matched pose arm exists
+                if closest_side in pose_wrist_positions and pose_results.pose_landmarks:
+                    lm = pose_results.pose_landmarks.landmark
+                    elbow_idx = POSE_LANDMARKS[f"{closest_side}_ELBOW"]
+
+                    # Convert pose elbow to pixels
+                    elbow_px = (
+                        int(lm[elbow_idx].x * w),
+                        int(lm[elbow_idx].y * h)
+                    )
+                    wrist_px = (wx, wy)
+
+                    # Middle finger MCP = base knuckle of middle finger
+                    # Acts as a proxy for the direction of the hand beyond the wrist
+                    mid_mcp = hand_lm.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP]
+                    mid_mcp_px = (int(mid_mcp.x * w), int(mid_mcp.y * h))
+
+                    # Angle at wrist: how much the hand deviates from the forearm direction
+                    # 180° = hand perfectly aligned with forearm, smaller = wrist is bent
+                    wrist_bend = angle_between(elbow_px, wrist_px, mid_mcp_px)
+
+                    cv2.putText(frame, f"Wrist bend: {wrist_bend:.1f}deg",
+                                (wx, wy + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 0), 1)
+
+            
     
     cv2.imshow("Pose + Hands Tracking", frame)
 
