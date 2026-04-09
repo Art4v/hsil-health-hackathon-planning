@@ -63,5 +63,5 @@ python app.py
 Example with a different camera:
 
 ```bash
-python app.py --device 1
+python app.py --device 2
 ```
