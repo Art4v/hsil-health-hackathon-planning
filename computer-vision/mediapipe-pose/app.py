@@ -1,7 +1,23 @@
 # Library imports
+import argparse
 import cv2
 import mediapipe as mp
 import numpy as np
+
+# -----------------------------------------------------------------------------
+# CLI ARGUMENTS
+# -----------------------------------------------------------------------------
+parser = argparse.ArgumentParser()
+parser.add_argument("--device", type=int, default=0, help="Camera device number")
+parser.add_argument("--width", type=int, default=960, help="Camera capture width")
+parser.add_argument("--height", type=int, default=540, help="Camera capture height")
+parser.add_argument("--use_static_image_mode", action="store_true",
+                    help="Use static image mode for MediaPipe")
+parser.add_argument("--min_detection_confidence", type=float, default=0.5,
+                    help="Detection confidence threshold")
+parser.add_argument("--min_tracking_confidence", type=float, default=0.5,
+                    help="Tracking confidence threshold")
+args = parser.parse_args()
 
 # Get utilities from libraries
 mp_drawing = mp.solutions.drawing_utils
@@ -113,12 +129,28 @@ def elevation_angle(p1, p2):
 # -----------------------------------------------------------------------------
 
 # Initialise pose model — tracks full body, we'll just read the 6 joints we need
-pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+pose = mp_pose.Pose(
+    static_image_mode=args.use_static_image_mode,
+    min_detection_confidence=args.min_detection_confidence,
+    min_tracking_confidence=args.min_tracking_confidence,
+)
 
 # Initialise hands model — detects up to 2 hands by default
-hands = mp_hands.Hands(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+hands = mp_hands.Hands(
+    static_image_mode=args.use_static_image_mode,
+    min_detection_confidence=args.min_detection_confidence,
+    min_tracking_confidence=args.min_tracking_confidence,
+)
 
-cap = cv2.VideoCapture(2)
+cap = cv2.VideoCapture(args.device)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+
+if not cap.isOpened():
+    raise RuntimeError(
+        f"Could not open camera device {args.device}. "
+        f"Try a different --device index (0, 1, 2, ...)."
+    )
 
 # -----------------------------------------------------------------------------
 # RUN MODELS WHILE WEBCAM IS RUNNING
@@ -280,6 +312,6 @@ while cap.isOpened():
 
 # Release all resources cleanly
 cap.release()
-pose.release()
-hands.release()
+pose.close()
+hands.close()
 cv2.destroyAllWindows()
